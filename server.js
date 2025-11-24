@@ -74,6 +74,7 @@ app.get('/', (req, res) => {
       'POST /api/messages/batch-trash',
       'POST /api/messages/add-label',
       'POST /api/messages/remove-label',
+      'POST /api/messages/delete-by-query',
     ],
   });
 });
@@ -159,25 +160,30 @@ app.post('/api/messages/delete', authenticate, async (req, res) => {
   }
 });
 
-// Delete multiple messages
+// Delete multiple messages (optimized with Gmail API batchDelete)
 app.post('/api/messages/batch-delete', authenticate, async (req, res) => {
   try {
     await initializeGmail();
     const { messageIds } = req.body;
 
+    const BATCH_SIZE = 100; // Gmail API supports up to 1000, but 100 is safer
+
     let deletedCount = 0;
     let failedCount = 0;
 
-    for (const messageId of messageIds) {
+    // Process in batches
+    for (let i = 0; i < messageIds.length; i += BATCH_SIZE) {
+      const batch = messageIds.slice(i, i + BATCH_SIZE);
+
       try {
-        await gmail.users.messages.delete({
+        await gmail.users.messages.batchDelete({
           userId: 'me',
-          id: messageId,
+          requestBody: { ids: batch }
         });
-        deletedCount++;
+        deletedCount += batch.length;
       } catch (error) {
-        failedCount++;
-        console.error(`Failed to delete ${messageId}:`, error.message);
+        failedCount += batch.length;
+        console.error(`Failed to delete batch:`, error.message);
       }
     }
 
@@ -256,6 +262,57 @@ app.post('/api/messages/remove-label', authenticate, async (req, res) => {
     });
 
     res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Delete all messages matching a query (optimized)
+app.post('/api/messages/delete-by-query', authenticate, async (req, res) => {
+  try {
+    await initializeGmail();
+    const { query } = req.body;
+
+    let totalDeleted = 0;
+    const BATCH_SIZE = 100;
+
+    while (true) {
+      // Search for messages
+      const searchResponse = await gmail.users.messages.list({
+        userId: 'me',
+        q: query,
+        maxResults: 500
+      });
+
+      const messages = searchResponse.data.messages || [];
+
+      if (messages.length === 0) {
+        break;
+      }
+
+      const messageIds = messages.map(m => m.id);
+
+      // Delete in batches
+      for (let i = 0; i < messageIds.length; i += BATCH_SIZE) {
+        const batch = messageIds.slice(i, i + BATCH_SIZE);
+
+        try {
+          await gmail.users.messages.batchDelete({
+            userId: 'me',
+            requestBody: { ids: batch }
+          });
+          totalDeleted += batch.length;
+        } catch (error) {
+          console.error(`Failed to delete batch:`, error.message);
+        }
+      }
+    }
+
+    res.json({
+      success: true,
+      deletedCount: totalDeleted,
+      query
+    });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

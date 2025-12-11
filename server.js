@@ -69,6 +69,7 @@ app.get('/', (req, res) => {
       'POST /api/labels/create',
       'POST /api/messages/search',
       'POST /api/messages/get',
+      'POST /api/messages/send',
       'POST /api/messages/delete',
       'POST /api/messages/batch-delete',
       'POST /api/messages/batch-trash',
@@ -262,6 +263,49 @@ app.post('/api/messages/remove-label', authenticate, async (req, res) => {
     });
 
     res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Send an email
+app.post('/api/messages/send', authenticate, async (req, res) => {
+  try {
+    await initializeGmail();
+    const { to, subject, body, cc, bcc } = req.body;
+
+    if (!to || !subject || !body) {
+      return res.status(400).json({ error: 'Missing required fields: to, subject, body' });
+    }
+
+    // Build email headers
+    let email = [
+      `To: ${to}`,
+      `Subject: ${subject}`,
+    ];
+
+    if (cc) email.push(`Cc: ${cc}`);
+    if (bcc) email.push(`Bcc: ${bcc}`);
+
+    email.push('Content-Type: text/plain; charset=utf-8');
+    email.push('');
+    email.push(body);
+
+    const rawMessage = email.join('\r\n');
+
+    // Encode in base64url format
+    const encodedMessage = Buffer.from(rawMessage)
+      .toString('base64')
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=+$/, '');
+
+    const response = await gmail.users.messages.send({
+      userId: 'me',
+      requestBody: { raw: encodedMessage },
+    });
+
+    res.json({ success: true, messageId: response.data.id });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
